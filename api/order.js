@@ -1,5 +1,5 @@
 import ccxt from "ccxt";
-import { verifyToken, ownerGateOK, send } from "./_lib/auth.js";
+import { isOwner, send } from "./_lib/auth.js";
 
 function ownerExchange(name) {
   const ex = (name || "binance").toLowerCase();
@@ -14,8 +14,7 @@ function ownerExchange(name) {
 
 export default async function handler(req, res) {
   if (req.method !== "POST") return send(res, 405, { error: "POST only" });
-  if (!verifyToken(req)) return send(res, 401, { error: "Login required" });
-  if (!ownerGateOK(req)) return send(res, 403, { error: "Owner gate required" });
+  if (!isOwner(req)) return send(res, 401, { error: "Owner login required" });
   // This public deploy is PAPER/TESTNET ONLY by design — never live.
   const { exchange = "binance", symbol, side, amount, type = "market" } = req.body || {};
   if (!symbol || !side || !amount) return send(res, 400, { error: "symbol, side, amount required" });

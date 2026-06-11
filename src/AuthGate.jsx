@@ -70,7 +70,7 @@ export default function AuthGate() {
 
   function submit() {
     setErr(""); setBusy(true);
-    fetch("/api/" + mode, {
+    fetch("/api/login", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify(form),
     }).then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
@@ -94,12 +94,7 @@ export default function AuthGate() {
           <span style={{ color: C.cyan, fontWeight: 700 }}>QT</span>
           <span style={{ color: C.sub }}>{email}</span>
           <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
-            <span style={{ color: ownerOn ? C.green : C.dim }}>{ownerOn ? "● OWNER UNLOCKED" : "○ owner locked"}</span>
-            <input type="password" value={ownerInput} placeholder="owner gate…"
-              onChange={function (e) { setOwnerInput(e.target.value); }}
-              style={{ background: C.bg, border: "1px solid " + C.border, color: C.txt, padding: "3px 8px", borderRadius: 3, fontSize: 10, width: 120, outline: "none" }} />
-            <button onClick={function () { setOwnerGate(ownerInput); setOwnerOn(Boolean(ownerInput)); }}
-              style={{ background: "transparent", border: "1px solid " + C.cyan, color: C.cyan, padding: "3px 8px", borderRadius: 3, fontSize: 10, cursor: "pointer" }}>Unlock</button>
+            <span style={{ color: C.green }}>● OWNER</span>
             <button onClick={logout} style={{ background: "transparent", border: "1px solid " + C.red, color: C.red, padding: "3px 8px", borderRadius: 3, fontSize: 10, cursor: "pointer" }}>Logout</button>
           </span>
         </div>
@@ -116,16 +111,7 @@ export default function AuthGate() {
           <div style={{ fontSize: 18, fontWeight: 700, color: C.txt }}>QUANTUM <span style={{ color: C.cyan }}>TRADER</span></div>
           <div style={{ fontSize: 9, color: C.dim, letterSpacing: "0.15em", marginTop: 2 }}>INSTITUTIONAL ALPHA ENGINE</div>
         </div>
-        <div style={{ display: "flex", gap: 6, marginBottom: 16 }}>
-          {["login", "signup"].map(function (m) {
-            return (
-              <button key={m} onClick={function () { setMode(m); setErr(""); }}
-                style={{ flex: 1, padding: "7px 0", background: mode === m ? C.cyan : "transparent", color: mode === m ? C.bg : C.sub, border: "1px solid " + (mode === m ? C.cyan : C.border), borderRadius: 4, fontSize: 11, fontWeight: 700, cursor: "pointer", textTransform: "uppercase" }}>
-                {m === "login" ? "Log In" : "Sign Up"}
-              </button>
-            );
-          })}
-        </div>
+        <div style={{ textAlign: "center", marginBottom: 16, fontSize: 10, color: C.sub, letterSpacing: "0.12em" }}>OWNER LOGIN</div>
         <input type="email" placeholder="email" value={form.email}
           onChange={function (e) { setForm(Object.assign({}, form, { email: e.target.value })); }}
           style={{ width: "100%", boxSizing: "border-box", background: C.bg, border: "1px solid " + C.border, color: C.txt, padding: "10px 12px", borderRadius: 4, fontSize: 12, marginBottom: 10, outline: "none" }} />
@@ -136,10 +122,10 @@ export default function AuthGate() {
         {err ? <div style={{ color: C.red, fontSize: 10, marginBottom: 10 }}>{err}</div> : null}
         <button onClick={submit} disabled={busy}
           style={{ width: "100%", padding: "11px 0", background: C.cyan, color: C.bg, border: "none", borderRadius: 4, fontSize: 12, fontWeight: 700, cursor: busy ? "default" : "pointer", textTransform: "uppercase", opacity: busy ? 0.6 : 1 }}>
-          {busy ? "…" : (mode === "login" ? "Log In" : "Create Account")}
+          {busy ? "…" : "Log In"}
         </button>
         <div style={{ fontSize: 8.5, color: C.dim, marginTop: 14, lineHeight: 1.6, textAlign: "center" }}>
-          Paper / testnet only. Educational. Not financial advice.<br />Live data &amp; paper simulation for all users.
+          Paper / testnet only. Educational. Not financial advice.<br />Owner access only.
         </div>
       </div>
     </div>

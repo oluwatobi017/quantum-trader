@@ -31,6 +31,12 @@ export function verifyToken(req) {
   try { return jwt.verify(token, JWT_SECRET); } catch (_) { return null; }
 }
 
+// ── owner check: the JWT carries owner:true for the single-owner login ──
+export function isOwner(req) {
+  const payload = verifyToken(req);
+  return Boolean(payload && payload.owner === true);
+}
+
 // ── the PERSONAL gate: only the owner who knows OWNER_GATE_SECRET ──
 // This is checked server-side before any order touches the owner's testnet keys.
 export function ownerGateOK(req) {

@@ -1,5 +1,5 @@
 import ccxt from "ccxt";
-import { verifyToken, ownerGateOK, send } from "./_lib/auth.js";
+import { isOwner, send } from "./_lib/auth.js";
 
 function ownerExchange(name) {
   const ex = (name || "binance").toLowerCase();
@@ -15,8 +15,7 @@ function ownerExchange(name) {
 }
 
 export default async function handler(req, res) {
-  if (!verifyToken(req)) return send(res, 401, { error: "Login required" });
-  if (!ownerGateOK(req)) return send(res, 403, { error: "Owner gate required — this account's testnet is private" });
+  if (!isOwner(req)) return send(res, 401, { error: "Owner login required" });
   try {
     const { inst, hasKeys } = ownerExchange(req.query.exchange);
     if (!hasKeys) return send(res, 400, { error: "Owner testnet keys not configured on server" });
