@@ -2841,9 +2841,11 @@ export default function App() {
   const fearGreedRef  = useRef(null);
   const [micro,       setMicro]       = useState(null);      // funding/OI/orderbook/liquidations
   function loadMicro(){
-    if (!HAS_BACKEND) { setMicro({err:"Backend required for derivatives feeds"}); return; }
+    if (!HAS_BACKEND || _IS_PROD) { setMicro({err:"Derivatives feeds (funding, open interest, liquidations, order book) run on the local backend. Start the local server to see them."}); return; }
     fetch(BACKEND+"/api/microstructure?exchange="+(exchange||"binance").toLowerCase()+"&symbol="+encodeURIComponent(sym))
-      .then(function(r){return r.json()}).then(function(d){ setMicro(d); }).catch(function(e){ setMicro({err:String(e.message||e)}); });
+      .then(function(r){ if(!r.ok) throw new Error("backend "+r.status); return r.json(); })
+      .then(function(d){ setMicro(d); })
+      .catch(function(e){ setMicro({err:String(e.message||e)}); });
   }
   // Menu drawer + bots state
   const [menuOpen,   setMenuOpen]   = useState(false);
@@ -3406,6 +3408,7 @@ export default function App() {
     ["portfolio","▤ PORTFOLIO"],["risk","⚠ RISK"],
     ["liquidity","◉ LIQUIDITY"],["ai","✦ AI OFFICER"],
     ["analytics","▲ ANALYTICS"],["backtest","⚡ BACKTEST"],
+    ["logbook","▣ LOGBOOK"],
     ["settings","⊙ SETTINGS"],
   ];
 
@@ -3522,6 +3525,7 @@ export default function App() {
                 ["ai","✦","AI Officer"],
                 ["analytics","▲","Analytics"],
                 ["backtest","⚡","Backtest"],
+                ["logbook","▣","Paper Logbook"],
                 ["settings","⊙","Settings"],
               ].map(function(mi){
                 return (
@@ -4433,6 +4437,124 @@ export default function App() {
             )}
           </div>
         )}
+
+        {/* ══════════ TAB: PAPER LOGBOOK ══════════ */}
+        {tab==="logbook"&&(function(){
+          const closed = trades || [];
+          const n = closed.length;
+          let wins=0, losses=0, grossW=0, grossL=0, net=0;
+          closed.forEach(function(t){
+            const p = Number((t.netPnl!=null ? t.netPnl : t.pnlAbs) || 0);
+            net += p;
+            if (p>0) { wins++; grossW += p; }
+            else if (p<0) { losses++; grossL += Math.abs(p); }
+          });
+          const winRate = n ? (wins/n*100) : 0;
+          const pf = grossL>0 ? (grossW/grossL) : (grossW>0 ? 99 : 0);
+          const avgW = wins ? (grossW/wins) : 0;
+          const avgL = losses ? (grossL/losses) : 0;
+          let mdd=0, peak=(equity&&equity.length)?equity[0]:CAPITAL;
+          (equity||[]).forEach(function(e){
+            if (e>peak) peak=e;
+            const dd = peak>0 ? (peak-e)/peak*100 : 0;
+            if (dd>mdd) mdd=dd;
+          });
+          const byReg={};
+          closed.forEach(function(t){
+            const r = t.regime || "UNKNOWN";
+            if (!byReg[r]) byReg[r]={n:0,w:0,net:0};
+            const p = Number((t.netPnl!=null ? t.netPnl : t.pnlAbs) || 0);
+            byReg[r].n++; if (p>0) byReg[r].w++; byReg[r].net += p;
+          });
+          const regimes = Object.keys(byReg);
+          const TARGET=30;
+          const enoughTrades = n>=TARGET;
+          const enoughRegimes = regimes.length>=2;
+          const ready = enoughTrades && enoughRegimes;
+          const pct = Math.min(100, Math.round(n/TARGET*100));
+          return (
+            <div style={{display:"grid",gap:9}}>
+              <div className="panel" style={{padding:"14px 16px",border:"1px solid "+(ready?T.green:T.amber)+"55"}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}>
+                  <div>
+                    <div style={{fontSize:9,color:T.dim,letterSpacing:"0.12em",textTransform:"uppercase",marginBottom:4}}>Paper-Test Readiness</div>
+                    <div style={{fontSize:14,fontWeight:700,color:ready?T.green:T.amber}}>
+                      {ready ? "● ENOUGH DATA — results are meaningful" : "○ NOT ENOUGH DATA YET — keep running"}
+                    </div>
+                  </div>
+                  <div style={{textAlign:"right"}}>
+                    <div style={{fontSize:20,fontWeight:700,fontFamily:"'IBM Plex Mono',monospace",color:T.txt}}>{n}<span style={{fontSize:11,color:T.dim}}>/{TARGET}</span></div>
+                    <div style={{fontSize:8,color:T.dim}}>closed trades</div>
+                  </div>
+                </div>
+                <div style={{height:6,background:T.bg3,borderRadius:3,marginTop:10,overflow:"hidden"}}>
+                  <div style={{height:"100%",width:pct+"%",background:ready?T.green:T.amber}}/>
+                </div>
+                <div style={{fontSize:8.5,color:T.sub,marginTop:8,lineHeight:1.5}}>
+                  A trustworthy read needs {TARGET}+ closed trades across at least 2 market regimes. You have {n} across {regimes.length} regime{regimes.length===1?"":"s"}{enoughTrades?"":" — keep the bot running"}{(enoughTrades&&!enoughRegimes)?" — wait for other market conditions":""}.
+                </div>
+              </div>
+              <div className="grid-6">
+                <StatPill label="Trades Closed" value={String(n)} color={T.blue}/>
+                <StatPill label="Win Rate" value={winRate.toFixed(1)+"%"} color={winRate>=45?T.green:T.amber}/>
+                <StatPill label="Profit Factor" value={pf>=99?"INF":pf.toFixed(2)} color={pf>=1.3?T.green:T.amber} sub="over 1.3 workable"/>
+                <StatPill label="Net P&L" value={(net>=0?"+":"")+"$"+net.toFixed(2)} color={net>=0?T.green:T.red}/>
+                <StatPill label="Max Drawdown" value={mdd.toFixed(2)+"%"} color={mdd>10?T.red:T.green} sub="kill at 10%"/>
+                <StatPill label="Avg W / Avg L" value={"$"+avgW.toFixed(0)+" / $"+avgL.toFixed(0)} color={avgW>=avgL?T.green:T.amber}/>
+              </div>
+              <div className="panel">
+                <span className="slbl">Win Rate by Market Regime</span>
+                {regimes.length===0?(
+                  <div style={{padding:"18px 0",textAlign:"center",color:T.dim,fontSize:10}}>No closed trades yet — start the bot and let setups complete.</div>
+                ):(
+                  <div style={{marginTop:8}}>
+                    <div style={{display:"flex",fontSize:8,color:T.dim,letterSpacing:"0.1em",textTransform:"uppercase",padding:"0 0 6px",borderBottom:"1px solid "+T.b1}}>
+                      <span style={{flex:2}}>Regime</span>
+                      <span style={{flex:1,textAlign:"right"}}>Trades</span>
+                      <span style={{flex:1,textAlign:"right"}}>Win %</span>
+                      <span style={{flex:1,textAlign:"right"}}>{"Net P&L"}</span>
+                    </div>
+                    {regimes.map(function(r){
+                      const g=byReg[r];
+                      const wr=g.n?(g.w/g.n*100):0;
+                      return (
+                        <div key={r} style={{display:"flex",fontSize:10,padding:"6px 0",borderBottom:"1px solid "+T.b0,fontFamily:"'IBM Plex Mono',monospace"}}>
+                          <span style={{flex:2,color:T.txt}}>{r}</span>
+                          <span style={{flex:1,textAlign:"right",color:T.sub}}>{g.n}</span>
+                          <span style={{flex:1,textAlign:"right",color:wr>=45?T.green:T.amber}}>{wr.toFixed(0)}%</span>
+                          <span style={{flex:1,textAlign:"right",color:g.net>=0?T.green:T.red}}>{(g.net>=0?"+":"")+"$"+g.net.toFixed(0)}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+              <div className="panel">
+                <span className="slbl">Recent Closed Trades</span>
+                {n===0?(
+                  <div style={{padding:"14px 0",textAlign:"center",color:T.dim,fontSize:10}}>Nothing closed yet.</div>
+                ):(
+                  <div style={{marginTop:6}}>
+                    {closed.slice(0,12).map(function(t,i){
+                      const p=Number((t.netPnl!=null?t.netPnl:t.pnlAbs)||0);
+                      return (
+                        <div key={(t.id||"t")+"-"+i} style={{display:"flex",justifyContent:"space-between",fontSize:9.5,padding:"5px 0",borderBottom:"1px solid "+T.b0,fontFamily:"'IBM Plex Mono',monospace"}}>
+                          <span style={{color:T.sub,flex:1}}>{t.time||""}</span>
+                          <span style={{color:T.txt,flex:1}}>{t.sym} {t.dir}</span>
+                          <span style={{color:T.dim,flex:1}}>{t.regime||"—"}</span>
+                          <span style={{color:p>=0?T.green:T.red,flex:1,textAlign:"right"}}>{(p>=0?"+":"")+"$"+p.toFixed(2)}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+              <div className="panel" style={{fontSize:8.5,color:T.sub,lineHeight:1.6,padding:"12px 14px"}}>
+                <span style={{color:T.amber,fontWeight:700}}>Discipline: </span>let the bot run untouched — do not close trades by hand or change parameters mid-test (that resets the clock). Aim for 30+ trades across trending, ranging and volatile regimes. Paper results always overstate live performance due to slippage, fills and psychology — when you go live, start tiny and keep the kill switch on. Not financial advice.
+              </div>
+            </div>
+          );
+        })()}
 
         {/* ══════════ TAB: SMC ══════════ */}
         {tab==="smc"&&curSmc&&(
