@@ -1714,9 +1714,28 @@ async function fetchTicker(sym, exchange) {
 }
 
 // Master fetcher: tries preferred exchange, falls back down the chain
+async function fetchCandlesViaBackend(sym, exchange, limit) {
+  const ex = (exchange||"binance").toLowerCase();
+  const url = BACKEND + "/api/candles?exchange=" + encodeURIComponent(ex) +
+              "&symbol=" + encodeURIComponent(sym) +
+              "&timeframe=1m&limit=" + limit;
+  const r = await fetch(url, { signal: timeoutSignal(10000) });
+  if (!r.ok) throw new Error("backend candles " + r.status);
+  const d = await r.json();
+  if (d && Array.isArray(d.candles) && d.candles.length >= 30) return d.candles;
+  return null;
+}
+
 async function fetchCandles(sym, exchange, limit=600) {
   const tryFetch = async function(fn) { try { const r=await fn(); return (r&&r.length>=30)?r:null; } catch(_){ return null; } };
   let candles=null, via="";
+
+  // 0) Prefer the secure backend candles endpoint. On a hosted URL the browser
+  //    cannot reach exchanges directly (CORS); the server fetches them instead.
+  if (HAS_BACKEND) {
+    candles=await tryFetch(function(){return fetchCandlesViaBackend(sym,exchange,limit)});
+    if (candles) return {candles, source:"LIVE", via:"server"};
+  }
 
   // 1) Try the exchange the user selected (works if the sandbox allows it)
   const exFns={
@@ -2009,8 +2028,10 @@ async function fetchExchangeBalance(exchange, apiKey, apiSecret, mode) {
   // Secure path first: ask the backend (keys live there)
   if (HAS_BACKEND) {
     try {
-      const r=await fetch(BACKEND+"/api/balance?exchange="+(exchange||"binance").toLowerCase()+"&mode="+(mode||"paper"),{signal:timeoutSignal(6000)});
-      if (r.ok) { const d=await r.json(); if (d&&isFinite(d.usdt)) return {usdt:d.usdt, total:d.usdt}; }
+      const r=await fetch(BACKEND+"/api/balance?exchange="+(exchange||"binance").toLowerCase()+"&mode="+(mode||"paper"),{signal:timeoutSignal(8000)});
+      const d=await r.json().catch(function(){return null;});
+      if (r.ok && d && isFinite(d.usdt)) return {usdt:d.usdt, total:d.usdt};
+      if (d && d.error) return {error:d.error};   // surface the real reason (e.g. keys not configured)
     } catch(_){}
   }
   if (!apiKey||!apiSecret) return null;
