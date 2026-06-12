@@ -2789,6 +2789,148 @@ function updatePosition(pos, price) {
   return {pos, realizedPnl, fullyClosed, event, exitPx:price};
 }
 
+// ════════════════════════════════════════════════════════════════════════
+//  v6 INSTITUTIONAL AGENT ENGINE
+//  Six specialist agents, each scoring the *candidate direction* from REAL
+//  indicators (no invented numbers). Returns per-agent confidence + a plain
+//  reason (the "why"), plus a gated consensus. Advisory by design — it never
+//  bypasses the existing hard risk gates or the kill switch.
+// ════════════════════════════════════════════════════════════════════════
+function runAgents(p) {
+  const C = p.candles || [];
+  const ind = p.ind || {};
+  const of = p.of || {};
+  const smc = p.smc || {};
+  const regime = p.regime || {};
+  const risk = p.risk || {};
+  const n = C.length;
+  const clamp = function (x) { return Math.max(0, Math.min(100, x)); };
+  const last = function (arr) { if (!arr || !arr.length) return null; for (let i = arr.length - 1; i >= 0; i--) { if (arr[i] != null) return arr[i]; } return null; };
+  if (n < 30) {
+    return { ready: false, agents: [], consensus: { verdict: "NO DATA", dir: "—", score: 0, confidence: 0, reason: "Need 30+ candles", color: "#5a6478" } };
+  }
+  const px = C[n - 1].c;
+  const dir = p.dir === "SELL" ? "SELL" : "BUY";
+  const dirSign = dir === "BUY" ? 1 : -1;
+
+  // ── 1) TREND AGENT — ADX strength + SuperTrend + EMA stack ──────────────
+  const adxV = last(ind.adx && ind.adx.adx) || 0;
+  const stUp = ind.st && ind.st.up && ind.st.up[n - 1] != null;
+  const stDn = ind.st && ind.st.dn && ind.st.dn[n - 1] != null;
+  const stDir = stUp ? 1 : stDn ? -1 : 0;
+  const ma9 = last(ind.ma9), ma21 = last(ind.ma21), ma50 = last(ind.ma50);
+  let maStack = 0;
+  if (ma9 != null && ma21 != null && ma50 != null) {
+    if (ma9 > ma21 && ma21 > ma50) maStack = 1;
+    else if (ma9 < ma21 && ma21 < ma50) maStack = -1;
+  }
+  const trendDir = (stDir + maStack) >= 1 ? 1 : (stDir + maStack) <= -1 ? -1 : 0;
+  const adxStrength = clamp((adxV - 15) / 35 * 100);
+  let trendScore = trendDir === 0 ? 50 : (trendDir === dirSign ? 50 + adxStrength / 2 : 50 - adxStrength / 2);
+  const trendConf = clamp(adxV > 25 ? 55 + adxStrength * 0.45 : adxStrength * 0.6);
+  const trendReason = trendDir === 0
+    ? "No clear trend — flat EMAs / SuperTrend chop"
+    : ((trendDir === dirSign ? "Trend " + (trendDir > 0 ? "up" : "down") + " supports " + dir : "Trend " + (trendDir > 0 ? "up" : "down") + " opposes " + dir) + ", ADX " + adxV.toFixed(0) + (adxV > 25 ? " (strong)" : " (weak)"));
+
+  // ── 2) MOMENTUM AGENT — RSI + MACD histogram slope ──────────────────────
+  const rsiV = last(ind.rsi) || 50;
+  const mh = ind.macd && ind.macd.hist ? ind.macd.hist : [];
+  const mhV = mh[n - 1] != null ? mh[n - 1] : 0;
+  const mhPrev = mh[n - 2] != null ? mh[n - 2] : 0;
+  const mhRising = mhV > mhPrev;
+  const rsiBull = rsiV > 50;
+  const momDir = (rsiBull && mhV > 0) ? 1 : (!rsiBull && mhV < 0) ? -1 : (mhV > 0 ? 1 : mhV < 0 ? -1 : 0);
+  const rsiDist = Math.abs(rsiV - 50);
+  let momScore = momDir === 0 ? 50 : (momDir === dirSign ? 50 + Math.min(45, rsiDist * 1.4) : 50 - Math.min(45, rsiDist * 1.4));
+  if ((dir === "BUY" && rsiV > 78) || (dir === "SELL" && rsiV < 22)) momScore -= 12; // exhaustion
+  momScore = clamp(momScore);
+  const momConf = clamp(40 + rsiDist * 1.2 + (mhRising === (dirSign > 0) ? 12 : 0));
+  const momReason = "RSI " + rsiV.toFixed(0) + (rsiBull ? " bullish" : " bearish") + ", MACD hist " + (mhV >= 0 ? "+" : "") + mhV.toFixed(3) + (mhRising ? " rising" : " falling") + ((dir === "BUY" && rsiV > 78) || (dir === "SELL" && rsiV < 22) ? " — overextended" : "");
+
+  // ── 3) VOLUME AGENT — volume vs avg + VWAP position + flow delta ─────────
+  const volNow = C[n - 1].v || 0;
+  const volAvg = last(ind.vs) || volNow || 1;
+  const volRatio = volAvg > 0 ? volNow / volAvg : 1;
+  const vwapV = last(ind.vwap);
+  const vwapSide = vwapV != null ? (px > vwapV ? 1 : -1) : 0;
+  const flowDelta = typeof of.delta === "number" ? of.delta : 0;
+  const flowDir = flowDelta > 0 ? 1 : flowDelta < 0 ? -1 : 0;
+  const volSupports = (vwapSide === dirSign ? 1 : 0) + (flowDir === dirSign ? 1 : 0);
+  let volScore = 50 + (volSupports - 1) * 18;
+  if (volRatio > 1.4) volScore += (vwapSide === dirSign ? 10 : -10); // strong vol confirms or warns
+  volScore = clamp(volScore);
+  const volConf = clamp(35 + Math.min(40, (volRatio - 1) * 60) + volSupports * 8);
+  const volReason = "Vol " + volRatio.toFixed(2) + "x avg, price " + (vwapSide >= 0 ? "above" : "below") + " VWAP, flow " + (flowDir > 0 ? "buy" : flowDir < 0 ? "sell" : "flat") + "-side";
+
+  // ── 4) LIQUIDITY AGENT — order-flow imbalance + SMC structure ────────────
+  const imb = typeof of.imbalance === "number" ? of.imbalance : 0; // -50..+50
+  const imbDir = imb > 0 ? 1 : imb < 0 ? -1 : 0;
+  const ofScore = typeof of.score === "number" ? of.score : 50;
+  const smcBias = smc.bias === "BULLISH" ? 1 : smc.bias === "BEARISH" ? -1 : 0;
+  const absorption = !!of.absorption, whale = !!of.whaleDet, stopHunt = !!smc.stopHunt;
+  const liqSupports = (imbDir === dirSign ? 1 : 0) + (smcBias === dirSign ? 1 : 0);
+  let liqScore = 50 + (liqSupports - 1) * 16 + (ofScore - 50) * 0.3 * dirSign;
+  if (whale) liqScore += (imbDir === dirSign ? 8 : -8);
+  if (stopHunt) liqScore += 6; // stop-hunt often precedes reversal in dir of sweep
+  liqScore = clamp(liqScore);
+  const liqConf = clamp(40 + Math.abs(imb) * 0.7 + (absorption ? 10 : 0) + (whale ? 10 : 0));
+  const liqReason = "OF " + ofScore.toFixed(0) + "/100, imbalance " + imb.toFixed(0) + (smcBias !== 0 ? ", SMC " + smc.bias.toLowerCase() : ", SMC neutral") + (whale ? ", whale print" : "") + (absorption ? ", absorption" : "") + (stopHunt ? ", stop-hunt" : "");
+
+  // ── 5) RISK AGENT — headroom vs hard limits (a GATE, not directional) ────
+  const dd = risk.dd || 0;                 // current drawdown %
+  const dailyPct = risk.dailyPct || 0;     // today's P&L %
+  const consec = risk.consec || 0;
+  const openN = risk.openPos || 0;
+  const atrPct = risk.atrPct || 0;
+  const KILL = (typeof risk.killDD === "number" ? risk.killDD : 10);
+  const DAILY = (typeof risk.dailyLimit === "number" ? risk.dailyLimit : 3);
+  const CONSEC = (typeof risk.consecLimit === "number" ? risk.consecLimit : 3);
+  const ddRoom = clamp((KILL - dd) / KILL * 100);
+  const dayRoom = clamp((DAILY - Math.max(0, -dailyPct)) / DAILY * 100);
+  const consecRoom = clamp((CONSEC - consec) / CONSEC * 100);
+  const riskScore = Math.round(Math.min(ddRoom, dayRoom, consecRoom));
+  let riskBlock = false, riskWhy = "Risk headroom OK";
+  if (dd >= KILL) { riskBlock = true; riskWhy = "KILL: drawdown " + dd.toFixed(1) + "% ≥ " + KILL + "%"; }
+  else if (-dailyPct >= DAILY) { riskBlock = true; riskWhy = "Daily loss " + dailyPct.toFixed(1) + "% hit " + DAILY + "% limit"; }
+  else if (consec >= CONSEC) { riskBlock = true; riskWhy = consec + " consecutive losses — cooldown"; }
+  else if (atrPct > 6) { riskWhy = "Elevated volatility (ATR " + atrPct.toFixed(1) + "%) — size down"; }
+  const riskConf = clamp(riskScore);
+
+  // ── 6) EXECUTION AGENT — entry quality gate (R:R, conviction, flow) ──────
+  const qsScore = p.qs && typeof p.qs.score === "number" ? p.qs.score : 0;
+  const tpProb = p.ml && typeof p.ml.tpProb === "number" ? p.ml.tpProb : 50;
+  const atrV = last(ind.atr) || 0;
+  const rr = atrV > 0 ? (3.5) : 0; // structural R:R from TP/SL multiples (tp3≈5.5x, sl≈1.6x)
+  const dirAgree = [trendDir, momDir, (imbDir || smcBias)].filter(function (x) { return x === dirSign; }).length;
+  let execScore = clamp(qsScore * 0.5 + (tpProb - 50) * 0.8 + dirAgree * 8);
+  const execGO = !riskBlock && qsScore >= 75 && tpProb >= 60 && dirAgree >= 2;
+  const execConf = clamp(45 + (qsScore - 50) * 0.6 + (tpProb - 50) * 0.5);
+  const execReason = riskBlock ? "Blocked by Risk Agent" : (execGO ? "Entry quality OK — QS " + qsScore.toFixed(0) + ", ML TP " + tpProb.toFixed(0) + "%, " + dirAgree + "/3 agents agree" : "Not yet — QS " + qsScore.toFixed(0) + "/75, ML " + tpProb.toFixed(0) + "%/60, " + dirAgree + "/3 agree");
+
+  const agents = [
+    { name: "Trend", score: Math.round(trendScore), confidence: Math.round(trendConf), signal: trendDir === 0 ? "NEUTRAL" : (trendScore >= 50 ? "SUPPORT" : "OPPOSE"), reason: trendReason },
+    { name: "Momentum", score: Math.round(momScore), confidence: Math.round(momConf), signal: momDir === 0 ? "NEUTRAL" : (momScore >= 50 ? "SUPPORT" : "OPPOSE"), reason: momReason },
+    { name: "Volume", score: Math.round(volScore), confidence: Math.round(volConf), signal: volScore >= 55 ? "SUPPORT" : volScore <= 45 ? "OPPOSE" : "NEUTRAL", reason: volReason },
+    { name: "Liquidity", score: Math.round(liqScore), confidence: Math.round(liqConf), signal: liqScore >= 55 ? "SUPPORT" : liqScore <= 45 ? "OPPOSE" : "NEUTRAL", reason: liqReason },
+    { name: "Risk", score: riskScore, confidence: Math.round(riskConf), signal: riskBlock ? "BLOCK" : "CLEAR", reason: riskWhy },
+    { name: "Execution", score: Math.round(execScore), confidence: Math.round(execConf), signal: execGO ? "GO" : "WAIT", reason: execReason },
+  ];
+
+  // ── CONSENSUS — weighted directional agents, gated by Risk + Execution ──
+  const W = { Trend: 0.30, Momentum: 0.25, Volume: 0.20, Liquidity: 0.25 };
+  let wsum = 0, csum = 0, wtot = 0;
+  agents.forEach(function (a) { const w = W[a.name]; if (w) { wsum += a.score * w; csum += a.confidence * w; wtot += w; } });
+  const blended = wtot ? wsum / wtot : 50;
+  const blendedConf = wtot ? csum / wtot : 0;
+  let verdict, color, reason;
+  if (riskBlock) { verdict = "BLOCKED"; color = "#ff4d6a"; reason = riskWhy; }
+  else if (blended >= 62 && execGO) { verdict = "ENTER " + dir; color = "#22e0a0"; reason = "Agents agree (" + blended.toFixed(0) + "%), risk clear, entry quality met"; }
+  else if (blended >= 55) { verdict = "LEAN " + dir; color = "#ffb020"; reason = "Mild edge (" + blended.toFixed(0) + "%) — waiting for full confirmation"; }
+  else { verdict = "WAIT"; color = "#5a6478"; reason = "No consensus edge (" + blended.toFixed(0) + "%)"; }
+
+  return { ready: true, dir: dir, agents: agents, consensus: { verdict: verdict, dir: dir, score: Math.round(blended), confidence: Math.round(blendedConf), reason: reason, color: color } };
+}
+
 export default function App() {
   const [tab,      setTab]      = useState("dashboard");
   const [sym,      setSym]      = useState("BTC/USDT");
@@ -3403,7 +3545,7 @@ export default function App() {
   },[d]);
 
   const TABS=[
-    ["dashboard","⬡ DASHBOARD"],["charts","◎ CHARTS"],
+    ["dashboard","⬡ DASHBOARD"],["charts","◎ CHARTS"],["agents","◆ AGENTS"],
     ["smc","⊛ SMC"],["flow","◈ FLOW"],
     ["portfolio","▤ PORTFOLIO"],["risk","⚠ RISK"],
     ["liquidity","◉ LIQUIDITY"],["ai","✦ AI OFFICER"],
@@ -3518,6 +3660,7 @@ export default function App() {
               <div style={{height:1,background:T.b1,margin:"8px 18px"}}/>
               {[
                 ["smc","⊛","SMC Analysis"],
+                ["agents","◆","AI Agents"],
                 ["flow","◈","Order Flow"],
                 ["portfolio","▤","Portfolio"],
                 ["risk","⚠","Risk"],
@@ -4437,6 +4580,76 @@ export default function App() {
             )}
           </div>
         )}
+
+        {/* ══════════ TAB: AI AGENTS ══════════ */}
+        {tab==="agents"&&(function(){
+          if (!d||!d.ind) return <div className="panel" style={{textAlign:"center",padding:48,color:T.dim}}>Load market data to run the agent engine.</div>;
+          const base=d.base, px=base[base.length-1].c;
+          const atrArr=(d.ind.atr||[]).filter(function(v){return v!=null});
+          const atrLast=atrArr.length?atrArr[atrArr.length-1]:0;
+          const atrPct=px>0?(atrLast/px*100):0;
+          const agentDir=(latSig&&latSig.dir)?latSig.dir:((curQs&&curQs.dir)?curQs.dir:"BUY");
+          const ar=runAgents({
+            candles:base, ind:d.ind, of:curOf||{}, smc:curSmc||{}, regime:regime||{},
+            qs:curQs||{}, ml:curMl||{}, dir:agentDir,
+            risk:{ dd:port.dd||0, dailyPct:rs.daily||0, consec:rs.consec||0, openPos:openPos.length,
+              atrPct:atrPct, killDD:RISK_PARAMS.KILL_DD*100, dailyLimit:RISK_PARAMS.DAILY_LIMIT*100, consecLimit:RISK_PARAMS.CONSEC_LIMIT }
+          });
+          const sigColor=function(sg){
+            if (sg==="SUPPORT"||sg==="CLEAR"||sg==="GO") return T.green;
+            if (sg==="OPPOSE"||sg==="BLOCK") return T.red;
+            if (sg==="WAIT") return T.amber;
+            return T.dim;
+          };
+          const con=ar.consensus;
+          return (
+            <div style={{display:"grid",gap:9}}>
+              {/* Consensus header */}
+              <div className="panel" style={{padding:"14px 16px",border:"1px solid "+con.color+"55"}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:10}}>
+                  <div>
+                    <div style={{fontSize:9,color:T.dim,letterSpacing:"0.12em",textTransform:"uppercase",marginBottom:4}}>Agent Consensus — {sym} · candidate {ar.dir}</div>
+                    <div style={{fontSize:18,fontWeight:700,color:con.color}}>{con.verdict}</div>
+                    <div style={{fontSize:9,color:T.sub,marginTop:3}}>{con.reason}</div>
+                  </div>
+                  <div style={{textAlign:"right"}}>
+                    <div style={{fontSize:24,fontWeight:700,fontFamily:"'IBM Plex Mono',monospace",color:con.color}}>{con.score}<span style={{fontSize:11,color:T.dim}}>/100</span></div>
+                    <div style={{fontSize:8,color:T.dim}}>conviction {con.confidence}%</div>
+                  </div>
+                </div>
+                <div style={{height:6,background:T.bg3,borderRadius:3,marginTop:10,overflow:"hidden"}}>
+                  <div style={{height:"100%",width:con.score+"%",background:con.color}}/>
+                </div>
+              </div>
+              {/* Six agents */}
+              <div className="grid-2">
+                {ar.agents.map(function(a){
+                  const col=sigColor(a.signal);
+                  return (
+                    <div key={a.name} className="panel" style={{padding:"11px 13px"}}>
+                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:7}}>
+                        <span style={{fontSize:11,fontWeight:700,color:T.txt,letterSpacing:"0.04em"}}>{a.name} Agent</span>
+                        <span style={{fontSize:8.5,fontWeight:700,color:col,border:"1px solid "+col+"66",borderRadius:3,padding:"2px 7px",letterSpacing:"0.08em"}}>{a.signal}</span>
+                      </div>
+                      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
+                        <div style={{flex:1,height:5,background:T.bg3,borderRadius:3,overflow:"hidden"}}>
+                          <div style={{height:"100%",width:a.score+"%",background:col}}/>
+                        </div>
+                        <span style={{fontSize:11,fontWeight:700,fontFamily:"'IBM Plex Mono',monospace",color:col,minWidth:30,textAlign:"right"}}>{a.score}</span>
+                      </div>
+                      <div style={{fontSize:8.5,color:T.sub,lineHeight:1.5,marginBottom:4}}>{a.reason}</div>
+                      <div style={{fontSize:7.5,color:T.dim,letterSpacing:"0.06em"}}>CONFIDENCE {a.confidence}%</div>
+                    </div>
+                  );
+                })}
+              </div>
+              {/* Footer note */}
+              <div className="panel" style={{fontSize:8.5,color:T.sub,lineHeight:1.6,padding:"11px 14px"}}>
+                <span style={{color:T.cyan,fontWeight:700}}>How this works: </span>each agent scores the candidate direction from live indicators — Trend (ADX + SuperTrend + EMA stack), Momentum (RSI + MACD), Volume (vol vs avg + VWAP + flow), Liquidity (order-flow imbalance + SMC), Risk (drawdown / daily-loss / streak headroom), Execution (entry quality). Consensus is the weighted directional blend, hard-gated by Risk and Execution. <span style={{color:T.amber}}>Advisory only</span> — it informs the existing pipeline; it does not override the kill switch or auto-fire live orders. Paper / testnet. Not financial advice.
+              </div>
+            </div>
+          );
+        })()}
 
         {/* ══════════ TAB: PAPER LOGBOOK ══════════ */}
         {tab==="logbook"&&(function(){
