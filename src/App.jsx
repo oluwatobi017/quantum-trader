@@ -1982,7 +1982,20 @@ async function placeOrder(sig, equity, exchange, mode, apiKey, apiSecret) {
   const qty    = parseFloat(sizing.units.toFixed(6));
   if (qty <= 0) throw new Error("Position size is zero — check equity and SL distance");
 
-  // ── Prefer the secure backend if one is reachable ──
+  // ── PAPER / TESTNET deploy: simulate the fill at the REAL current price ──
+  // Paper testing measures strategy P&L by simulation. We do NOT route paper
+  // trades to a real exchange: a spot testnet cannot short (SELL fails with no
+  // coin held) and needs per-asset balances. The position still tracks against
+  // REAL live price and closes on SL / TP / trailing, so paper P&L is accurate
+  // and there are no order-endpoint errors.
+  if (mode !== "live") {
+    const fillPrice = sig.px;
+    return { orderId:"PAPER-"+Date.now(), fillPrice, qty,
+      commission: fillPrice*qty*0.00075, slippage:0, status:"FILLED",
+      exchange, mode:"paper", timestamp:Date.now(), via:"sim" };
+  }
+
+  // ── LIVE mode only: route through the secure backend (server holds keys) ──
   if (HAS_BACKEND) {
     try {
       const r = await placeOrderViaBackend({...sig, exchange, exMode:mode}, qty);
@@ -1990,7 +2003,6 @@ async function placeOrder(sig, equity, exchange, mode, apiKey, apiSecret) {
       return { orderId:r.orderId, fillPrice, qty, commission:(r.fills&&r.fills[0]&&r.fills[0].commission)||0,
         slippage:Math.abs(fillPrice-sig.px)/sig.px*100, status:r.status, exchange, mode, timestamp:Date.now(), via:"backend" };
     } catch(beErr) {
-      // Backend not running / not configured — fall through to browser path.
       if (mode==="live") throw beErr; // never silently browser-sign a LIVE order
     }
   }
@@ -3407,11 +3419,11 @@ export default function App() {
         if (!sig) { diagOut[s].reason="No EMA-cross signal"; return; }
         if (seen.has(sig.id+"_exec")) { diagOut[s].reason="Signal already executed"; return; }
         if (sig.index<base.length-8) { diagOut[s].reason="Signal stale ("+(base.length-1-sig.index)+" bars old)"; return; }
-        if (!vRegime.tradeAllowed) { diagOut[s].reason="Regime blocks: "+vRegime.regime; return; }
+        if (!vRegime.tradeAllowed && !sr.demoMode) { diagOut[s].reason="Regime blocks: "+vRegime.regime; return; }
         var fg=fearGreedRef.current;
-        if (fg && fg.block) { diagOut[s].reason="Sentiment extreme ("+fg.label+" "+fg.value+") — trading paused"; diagOut[s].sentBlocked=true; return; }
-        if (vQs.score < QS_MIN) { diagOut[s].reason="Quant Score "+vQs.score+" < "+QS_MIN; return; }
-        if (vMl.tpProb < ML_MIN) { diagOut[s].reason="ML "+vMl.tpProb+"% < "+ML_MIN+"%"; return; }
+        if (fg && fg.block && !sr.demoMode) { diagOut[s].reason="Sentiment extreme ("+fg.label+" "+fg.value+") — trading paused"; diagOut[s].sentBlocked=true; return; }
+        if (vQs.score < QS_MIN && !sr.demoMode) { diagOut[s].reason="Quant Score "+vQs.score+" < "+QS_MIN; return; }
+        if (vMl.tpProb < ML_MIN && !sr.demoMode) { diagOut[s].reason="ML "+vMl.tpProb+"% < "+ML_MIN+"%"; return; }
         if (sr.rs.daily<=-RISK_PARAMS.DAILY_LIMIT*100) { diagOut[s].reason="Daily loss limit hit"; return; }
         if (sr.rs.weekly>=RISK_PARAMS.WEEKLY_LIMIT*100) { diagOut[s].reason="Weekly DD limit hit"; return; }
         if (positions.length>=3) { diagOut[s].reason="Max 3 positions open"; return; }
