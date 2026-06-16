@@ -1681,8 +1681,24 @@ function sanitizeTicker(t) {
 }
 
 // Fetch live ticker (current price, bid, ask)
+async function fetchTickerViaBackend(sym, exchange) {
+  const ex=(exchange||"binance").toLowerCase();
+  const url=BACKEND+"/api/ticker?exchange="+encodeURIComponent(ex)+"&symbol="+encodeURIComponent(sym);
+  const r=await fetch(url,{signal:timeoutSignal(8000)});
+  if(!r.ok) throw new Error("backend ticker "+r.status);
+  const d=await r.json();
+  if (d && isFinite(d.mid)) return sanitizeTicker({bid:d.bid,ask:d.ask,mid:d.mid,spread:d.spread||0});
+  return null;
+}
+
 async function fetchTicker(sym, exchange) {
   const exSym=toExSym(sym,exchange);
+  // Prefer the backend ticker. On a hosted URL the browser cannot reach
+  // exchanges directly (CORS / geoblock), so the server fetches it — this is
+  // what keeps candles moving and the bot fed with fresh prices on Vercel.
+  if (HAS_BACKEND) {
+    try { const b=await fetchTickerViaBackend(sym, exchange); if (b) return b; } catch(_){}
+  }
   try {
     if (exchange==="Binance") {
       const r=await fetch(BINANCE_BASE+"/api/v3/ticker/bookTicker?symbol="+exSym,{signal:timeoutSignal(4000)});
