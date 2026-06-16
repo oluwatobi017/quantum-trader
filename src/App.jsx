@@ -3369,7 +3369,7 @@ export default function App() {
         positions=positions.filter(function(p){return !(p.sym===s && p.remaining<=0.0001)});
 
         // ── 2) LOOK FOR NEW ENTRY (with live diagnostics) ───────────────────
-        const sig=sigs[sigs.length-1];
+        let sig=sigs[sigs.length-1];
         const diag=function(reason){ diagOut[s]=reason; };
         // Compute pipeline values even if no fresh signal, so the diagnostic
         // panel always shows the current state of each gate.
@@ -3385,6 +3385,25 @@ export default function App() {
 
         // Staleness window scaled for live data: a signal stays actionable for
         // 8 bars after the cross (was 5). Synthetic mode advances every tick.
+        // DEMO ONLY: if there is no fresh EMA-cross signal, synthesize a
+        // candidate from the current trend so the paper-execution pipeline can
+        // be verified end to end. This never runs with Demo off — the real
+        // strategy still requires a genuine signal.
+        if (!sig && sr.demoMode) {
+          const di=base.length-1, px=base[di].c;
+          const atrV=ind.atr[di]||(px*0.005);
+          const dDir=dirGuess;
+          const slM=1.6, t1=2.0, t2=3.5, t3=5.5;
+          sig={ id:"DEMO_"+s+"_"+di, index:di, dir:dDir, px:px,
+            sl:(dDir==="BUY"?px-slM*atrV:px+slM*atrV),
+            tp1:(dDir==="BUY"?px+t1*atrV:px-t1*atrV),
+            tp2:(dDir==="BUY"?px+t2*atrV:px-t2*atrV),
+            tp3:(dDir==="BUY"?px+t3*atrV:px-t3*atrV),
+            rr:t3/slM, score:Math.max(vQs.score,QS_MIN), grade:"DEMO",
+            bd:{}, atr:atrV, rsi:ind.rsi[di], adx:ind.adx.adx[di], ms:ind.ms[di],
+            vwap:ind.vwap[di], entryType:"DEMO", rawScore:vQs.score, demo:true };
+          diagOut[s].hasSig=true; diagOut[s].sigAge=0;
+        }
         if (!sig) { diagOut[s].reason="No EMA-cross signal"; return; }
         if (seen.has(sig.id+"_exec")) { diagOut[s].reason="Signal already executed"; return; }
         if (sig.index<base.length-8) { diagOut[s].reason="Signal stale ("+(base.length-1-sig.index)+" bars old)"; return; }
